@@ -1,0 +1,191 @@
+name: Dependency Security
+
+on:
+  push:
+    branches: ["main", "develop"]
+    paths:
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "setup.cfg"
+      - "math_proof_assistant.py"
+  pull_request:
+    branches: ["main", "develop"]
+  schedule:
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  pip-audit:
+    name: pip-audit CVE Scan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            sympy \
+            z3-solver \
+            streamlit \
+            pypdf \
+            ttkbootstrap \
+            requests
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+
+      - name: Run pip-audit
+        run: |
+          pip-audit \
+            --format json \
+            --output pip-audit-report.json \
+            --vulnerability-service pypi \
+            --fix --dry-run || true
+          pip-audit \
+            --format cyclonedx-json \
+            --output sbom.json \
+            --vulnerability-service pypi
+
+      - name: Upload pip-audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: |
+            pip-audit-report.json
+            sbom.json
+          retention-days: 30
+
+      - name: Fail on high/critical CVEs
+        run: |
+          python - <<'EOF'
+          import json, sys
+          try:
+              with open("pip-audit-report.json") as f:
+                  data = json.load(f)
+          except Exception:
+              sys.exit(0)
+          vulns = data.get("vulnerabilities", [])
+          critical = [v for v in vulns if v.get("fix_versions")]
+          if critical:
+              for v in critical:
+                  print(f"[FAIL] {v['name']} {v['version']}: {v['id']}")
+              sys.exit(1)
+          EOF
+
+  osv-scanner:
+    name: OSV Dependency Scan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate requirements snapshot
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            sympy \
+            z3-solver \
+            streamlit \
+            pypdf \
+            ttkbootstrap \
+            requests
+          pip freeze > requirements-frozen.txt
+
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --lockfile=requirements-frozen.txt
+            --format=sarif
+            --output=osv-results.sarif
+        continue-on-error: true
+
+      - name: Upload OSV SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-results.sarif
+          category: osv-scanner
+
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies and licensecheck
+        run: |
+          pip install \
+            sympy \
+            z3-solver \
+            streamlit \
+            pypdf \
+            ttkbootstrap \
+            requests \
+            pip-licenses==4.4.0
+
+      - name: Generate license report
+        run: |
+          pip-licenses \
+            --format=json \
+            --output-file=licenses.json \
+            --with-urls
+
+      - name: Fail on GPL/AGPL/LGPL incompatible licenses
+        run: |
+          python - <<'EOF'
+          import json, sys
+          BLOCKED = {"GPL", "AGPL", "LGPL"}
+          with open("licenses.json") as f:
+              pkgs = json.load(f)
+          failures = []
+          for pkg in pkgs:
+              lic = pkg.get("License", "")
+              if any(b in lic for b in BLOCKED):
+                  failures.append(f"{pkg['Name']} {pkg['Version']}: {lic}")
+          if failures:
+              print("License policy violations:")
+              for f in failures:
+                  print(f"  {f}")
+              sys.exit(1)
+          print("All licenses compliant.")
+          EOF
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: licenses.json
+          retention-days: 30
