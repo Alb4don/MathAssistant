@@ -1,0 +1,92 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install analysis dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            ruff==0.4.4 \
+            mypy==1.10.0 \
+            types-requests \
+            sympy \
+            z3-solver \
+            pypdf \
+            requests
+
+      - name: Ruff lint
+        run: |
+          ruff check math_proof_assistant.py \
+            --select E,W,F,S,B,C4,UP,N \
+            --ignore S101,S603,S607 \
+            --output-format github
+
+      - name: Ruff format check
+        run: ruff format --check math_proof_assistant.py
+
+      - name: Mypy type check
+        run: |
+          mypy math_proof_assistant.py \
+            --ignore-missing-imports \
+            --disallow-untyped-defs \
+            --warn-return-any \
+            --warn-unused-ignores \
+            --no-error-summary
+
+  complexity:
+    name: Cyclomatic Complexity
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install radon
+        run: pip install radon==6.0.1
+
+      - name: Cyclomatic complexity report
+        run: |
+          radon cc math_proof_assistant.py -a -s -n C
+
+      - name: Maintainability index
+        run: |
+          radon mi math_proof_assistant.py -s
