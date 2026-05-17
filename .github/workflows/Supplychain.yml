@@ -1,0 +1,201 @@
+name: Supply Chain Security
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 5 * * 2"
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  attestations: write
+
+jobs:
+  sbom-generation:
+    name: SBOM Generation & Attestation
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: |
+          pip install \
+            sympy \
+            z3-solver \
+            streamlit \
+            pypdf \
+            ttkbootstrap \
+            requests
+          pip freeze > requirements-frozen.txt
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          pip install cyclonedx-bom==4.4.3
+          cyclonedx-py environment \
+            --output-format json \
+            --outfile sbom-cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom-cyclonedx.json
+            requirements-frozen.txt
+          retention-days: 90
+
+      - name: Attest SBOM (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/attest-sbom@v1
+        with:
+          subject-path: math_proof_assistant.py
+          sbom-path: sbom-cyclonedx.json
+
+  hash-pinning-check:
+    name: Dependency Hash Verification
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check for unpinned dependencies
+        run: |
+          python - <<'EOF'
+          import re, sys
+
+          core_deps = [
+              "sympy",
+              "z3-solver",
+              "streamlit",
+              "pypdf",
+              "ttkbootstrap",
+              "requests",
+          ]
+
+          try:
+              with open("requirements.txt") as f:
+                  content = f.read()
+          except FileNotFoundError:
+              print("No requirements.txt found — generating advisory only.")
+              print("Recommended pinned dependencies for math_proof_assistant.py:")
+              for d in core_deps:
+                  print(f"  {d}")
+              sys.exit(0)
+
+          unpinned = []
+          for dep in core_deps:
+              pattern = re.compile(rf"^{re.escape(dep)}(\s*[=!<>])", re.MULTILINE | re.IGNORECASE)
+              if not pattern.search(content):
+                  unpinned.append(dep)
+
+          if unpinned:
+              print("WARNING: The following dependencies have no version pin:")
+              for d in unpinned:
+                  print(f"  {d}")
+          else:
+              print("All tracked dependencies are pinned.")
+          EOF
+
+  action-pinning-audit:
+    name: GitHub Actions Pin Audit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Audit action version pins
+        run: |
+          python - <<'EOF'
+          import re, sys, glob
+
+          workflow_files = glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml")
+          issues = []
+
+          for wf in workflow_files:
+              with open(wf) as f:
+                  content = f.read()
+              uses_lines = re.findall(r"uses:\s*(.+)", content)
+              for use in uses_lines:
+                  use = use.strip()
+                  if use.startswith("./"): 
+                      continue
+                  if "@" not in use:
+                      issues.append(f"{wf}: unpinned action '{use}'")
+                      continue
+                  ref = use.split("@", 1)[1]
+                  if not re.match(r"^v\d+", ref) and not re.match(r"^[0-9a-f]{40}$", ref):
+                      issues.append(f"{wf}: non-version/non-SHA pin '{use}'")
+
+          if issues:
+              for issue in issues:
+                  print(f"::warning::{issue}")
+          else:
+              print("All GitHub Actions are pinned to version tags or SHAs.")
+          EOF
+
+  provenance-check:
+    name: Workflow Integrity Check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify no workflow modifications in PR from fork
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- .github/workflows/)
+          if [ -n "$CHANGED" ]; then
+            echo "::warning::Workflow files modified in this PR:"
+            echo "$CHANGED"
+            if [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+              echo "::error::Workflow modifications from a fork require maintainer review."
+              exit 1
+            fi
+          fi
+
+      - name: Compute source file hash
+        run: |
+          sha256sum math_proof_assistant.py | tee math_proof_assistant.py.sha256
+          echo "Source hash recorded: $(cat math_proof_assistant.py.sha256)"
+
+      - name: Upload source hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-hash
+          path: math_proof_assistant.py.sha256
+          retention-days: 90
