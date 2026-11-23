@@ -89,8 +89,4 @@ A fifth key, `security_notices`, appears only when the sanitizer modified or tru
 
 ## limitations
 
-Z3 handles linear arithmetic and simple polynomial inequalities well, but non-linear expressions that SymPy cannot reduce to a form Z3 accepts will return `None` from the translation layer and fall back to a symbolic-only analysis. 
-
-If the local server is unreachable or times out after 30 seconds, analysis continues without the LLM pass and no error is surfaced to the user. The Ollama output is appended to `suggestions` but does not influence the symbolic or Z3 analysis paths.
-
-The PDF extractor uses `pypdf`'s text layer and will produce poor results on scanned documents without an OCR pre-processing step. Heavily mathematical PDFs with LaTeX-rendered text may yield garbled Unicode depending on the font encoding used in the source file.
+- Only arithmetic, polynomial and elementary claims are checked formally (The correction will be implemented shortly).
