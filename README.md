@@ -10,7 +10,8 @@ Given a mathematical statement as raw text, a Python docstring, or a PDF, the to
 
 The tool ships in three modes a Streamlit web interface, a `ttkbootstrap` desktop GUI, and a CLI so it fits into research workflows, classroom environments, and automated pipelines equally well.
 
-<img width="801" height="628" alt="front_math" src="https://github.com/user-attachments/assets/6862e827-c98f-4307-961a-c668cf239e33" />
+<img width="1331" height="817" alt="mathfront" src="https://github.com/user-attachments/assets/e57cce77-9570-48ae-97aa-b98af35bccea" />
+
 
 
 ## Installation
